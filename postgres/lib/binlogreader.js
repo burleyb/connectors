@@ -9,9 +9,10 @@ const lsn = require('./lsn');
 var backoff = require("backoff");
 
 //I need to overwrite the pg connection listener to apply backpressure;
-let Connection = require("pg/lib/connection.js");
+let Connection = pg.Connection;
 
 let shutdown = false;
+let shouldReport = false
 let copyDataThrough;
 
 function toObject(acc, field) {	acc[field.n] = field.v;	return acc;}
@@ -36,8 +37,8 @@ Connection.prototype.attachListeners = function(stream) {
 			}
 			packet = self._reader.read();
 		}
-
 		if (!lastWriteGood || shutdown) {
+			logger.log("============================ pausing stream ============================")
 			stream.pause();
 			if (!shutdown) {
 				copyDataThrough.once('drain', () => {
@@ -68,9 +69,10 @@ module.exports = {
 		var retry = backoff.fibonacci({
 			randomisationFactor: 0,
 			initialDelay: 1000,
-			maxDelay: 60000
+			maxDelay: 30000
 		});
-		retry.failAfter(100);
+		logger.log("==== failAfter =====", opts.failAfter)
+		retry.failAfter(parseInt(opts.failAfter));
 		retry.on('backoff', function(number, delay) {
 			logger.error(`(${config.database}) Going to try to connect again in ${delay} ms`);
 		});
@@ -78,13 +80,14 @@ module.exports = {
 			err.database = config.database;
 			err.traceType = 'fail';
 			logger.error(err);
-			copyDataThrough.destroy(err);
+			logger.log("================================== FAIL =============================================")
 		});
 
 		let count = 0;
 		let replicationClient;
 
 		let maxDate = null;
+		var started = Date.now()
 
 		copyDataThrough = through((msg, done) => {
 			let currentLsn = lsn.fromWal(msg);
@@ -96,9 +99,10 @@ module.exports = {
 			}
 			if (msg.chunk[0] == 0x77) { // XLogData
 				count++;
-				if (count === 100) {
+				if (count > opts.reportEvery) {
 					logger.info("Processed(w/writeLsn):", count, currentLsn.string);
 					count = 0;
+					shouldReport = true
 				}
 				let log;
 				try {
@@ -148,8 +152,9 @@ module.exports = {
 					timestamp,
 					shouldRespond
 				});
-				if (shouldRespond) {
+				if (shouldReport || shouldRespond) {
 					logger.debug('Should Respond. LastLsn: ' + lastLsn.string + ' Current lsn: ' + currentLsn.string + ' Writelsn:' + writeLsn.string);
+					shouldReport = false
 					walCheckpoint(replicationClient, lastLsn, writeLsn);
 				}
 				done(null);
@@ -162,31 +167,7 @@ module.exports = {
 
 		retry.on('ready', function() {
 			
-			if (replicationClient) {
-				try {
-					replicationClient.removeAllListeners();
-					if (wrapperClient) {
-						wrapperClient.end(err => {
-							if (err) {
-								return logger.error(`(${config.database}) wrapperClient.end ERROR:`, err);
-							}
-							logger.debug("wrapperClient.end");
-							wrapperClient = null;
-							replicationClient.end(err => {
-								if (err) {
-									return logger.error(`(${config.database}) replicationClient.end ERROR:`, err);
-								}
-								replicationClient = null;
-								logger.debug("replicationClient.end");
-								retry.backoff(err);
-							});
-						});
-					}
-				} catch (err) {
-					logger.error(`(${config.database}) Error Closing Database Connections`, err);
-				}				
-			}
-			
+			shutdown = false
 			let wrapperClient = connect(config);
 			replicationClient = new pg.Client(Object.assign({}, config, {
 				replication: 'database'
@@ -195,7 +176,7 @@ module.exports = {
 			let dieError = function(err) {
 				err.database = config.database;
 				err.traceType = 'dieError';
-				logger.error(err);
+				logger.error("dieError:" , err);
 				clearTimeout(walCheckpointHeartBeatTimeoutId);
 				if (replicationClient) {
 					try {
@@ -213,7 +194,12 @@ module.exports = {
 									}
 									replicationClient = null;
 									logger.debug("replicationClient.end");
-									retry.backoff(err);
+									copyDataThrough.destroy(err);
+									if(shutdown) {
+										retry.reset()
+									} else {
+										retry.backoff(err);
+									}
 								});
 							});
 						}
@@ -242,7 +228,7 @@ module.exports = {
 					}
 				}
 				
-				wrapperClient.query(`SELECT * FROM pg_replication_slots where slot_name = $1`, [opts.slot_name], async (err, result) => {
+				wrapperClient.query(`SELECT * FROM pg_replication_slots where slot_name = $1`, [opts.slot_name], (err, result) => {
 					logger.info(`(${config.database}) Trying to get replication slot ${opts.slot_name}.`);
 					if (err) return dieError(err);
 					let tasks = [];
@@ -262,13 +248,13 @@ module.exports = {
 							});
 						}));
 					} else {
-						if(result[0].active && result[0].active_pid) {
-							tasks.push(done => wrapperClient.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND pid = $1;`, [result[0].active_pid], (err) => {
-								logger.info(`(${config.database}) killing active connection that is using ${opts.slot_name}.`);
-								if (err) return done(err);
-								done();
-							}))						
-						}
+						// if(shutdown && result[0].active && result[0].active_pid) {
+						// 	tasks.push(done => wrapperClient.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND pid = $1;`, [result[0].active_pid], (err) => {
+						// 		logger.info(`(${config.database}) killing active connection that is using ${opts.slot_name}.`);
+						// 		if (err) return done(err);
+						// 		done('outoftime');
+						// 	}))						
+						// }
 						restartLsn = result[0].confirmed_flush_lsn || result[0].restart_lsn;
 					}
 					async.series(tasks, (err) => {
@@ -296,6 +282,13 @@ module.exports = {
 								}
 								walCheckpoint(replicationClient, lastLsn, writeLsn);
 								walCheckpointHeartBeatTimeoutId = setTimeout(walCheckpointHeartBeat, opts.keepalive);
+								let elapsedTime = new Date() - started;
+								logger.debug("======== Heartbeat ============ duration:", opts.duration, " elapsedTime:", elapsedTime );
+								if(parseInt(opts.duration) <= parseInt(elapsedTime)) {
+									logger.debug("======== outOfTime ============", elapsedTime);
+									shutdown = true
+									dieError('outoftime')
+								}
 							};
 							walCheckpointHeartBeat();
 							copyDataThrough.acknowledge = function(lsnAck) {
@@ -331,7 +324,17 @@ function walCheckpoint(replicationClient, flushLsn, writeLsn) {
 	var now = (Date.now() - 946080000000);
 	var upperTimestamp = Math.floor(now / 4294967.296);
 	var lowerTimestamp = Math.floor((now - upperTimestamp * 4294967.296));
-// Wal Checkpoint write/flush lsn:  { upper: 0, lower: 349944328, string: '0/14DBBA08' } { upper: 0, lower: 69670424, string: '0/4271618' }
+	
+	// Wal Checkpoint write/flush lsn:  { upper: 0, lower: 349944328, string: '0/14DBBA08' } { upper: 0, lower: 69670424, string: '0/4271618' }
+
+	// if (writeLsn.lower === 4294967295) { // [0xff, 0xff, 0xff, 0xff]
+	// 	writeLsn.upper = writeLsn.upper + 1;
+	// 	writeLsn.lower = 0;
+	// } else {
+	// 	writeLsn.lower = writeLsn.lower + 1;
+	// }
+
+
 	var response = Buffer.alloc(34);
 	response.fill(0x72); // 'r'
 
