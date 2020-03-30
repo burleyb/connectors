@@ -78,10 +78,10 @@ module.exports = function(connection) {
 				from (${table.sql.replace('__IDCOLUMNLIMIT__', where(data, settings))}) i
 			) as t`;
 
-			console.log("Batch Query", batchQuery);
+			logger.log("Batch Query", batchQuery);
 			connection.query(batchQuery, (err, rows) => {
 				if (err) {
-					console.log("Batch Checksum Error", err);
+					logger.log("Batch Checksum Error", err);
 					callback(err);
 				} else {
 					callback(null, {
@@ -108,10 +108,10 @@ module.exports = function(connection) {
 			let individualQuery = `select ${settings.id_column} as id, md5(concat(${fieldCalcs.join(', ')})) as hash
 				from (${table.sql.replace('__IDCOLUMNLIMIT__', where(data, settings))}) i`;
 
-			console.log("Individual Query", individualQuery);
+			logger.log("Individual Query", individualQuery);
 			connection.query(individualQuery, (err, rows) => {
 				if (err) {
-					console.log("Individual Checksum Error", err);
+					logger.log("Individual Checksum Error", err);
 					callback(err);
 				} else {
 					let results = {
@@ -144,10 +144,10 @@ module.exports = function(connection) {
 			let delQuery = `delete from ${tableName}
 				where ${settings.id_column} in (${data.ids.map(f=>escape(f))})`;
 
-			console.log("Delete Query", delQuery);
+			logger.log("Delete Query", delQuery);
 			connection.query(delQuery, (err) => {
 				if (err) {
-					console.log("Delete Error", err);
+					logger.log("Delete Error", err);
 					callback(err);
 					return;
 				}
@@ -167,10 +167,10 @@ module.exports = function(connection) {
 
 		getFields(connection, event).then((table) => {
 			let sampleQuery = table.sql.replace('__IDCOLUMNLIMIT__', where(data, settings));
-			console.log("Sample Query", sampleQuery);
+			logger.log("Sample Query", sampleQuery);
 			connection.query(sampleQuery, (err, rows) => {
 				if (err) {
-					console.log("Sample Error", err);
+					logger.log("Sample Error", err);
 					callback(err);
 					return;
 				}
@@ -245,10 +245,10 @@ module.exports = function(connection) {
 			limit 2
 			offset ${data.limit - 1}`;
 
-		console.log(`Nibble Query: ${query}`);
+		logger.log(`Nibble Query: ${query}`);
 		connection.query(query, (err, rows) => {
 			if (err) {
-				console.log("Nibble Error", err);
+				logger.log("Nibble Error", err);
 				callback(err);
 			} else {
 				data.current = rows[0] ? rows[0].id : null;
@@ -266,12 +266,12 @@ module.exports = function(connection) {
 		if (typeof event.settings.table == "object" && event.settings.table.sql) {
 			session.table = `${event.settings.table.name || 'leo_chk'}_${moment.now()}`;
 
-			console.log("Table", session.table);
+			logger.log("Table", session.table);
 
 			let connection = getConnection(event.settings);
 			connection.query(`create table ${session.table} (${event.settings.table.sql})`, (err, data) => {
 				session.drop = !err;
-				console.log(err);
+				logger.log(err);
 				callback(err, session)
 			});
 		} else {
