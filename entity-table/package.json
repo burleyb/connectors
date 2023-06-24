@@ -22,8 +22,11 @@
 		"backoff": "2.5.0",
 		"js-beautify": "1.10.2",
 		"leo-aws": "1.5.0",
-		"leo-logger": "1.0.1",
-		"leo-sdk": "3.2.0"
+		"leo-sdk": "file:../../smartshyp-deps/leo-sdk",
+		"leo-logger": "1.0.1"
+	},
+	"overrides": {
+		"leo-sdk": "file:../smartshyp-deps/leo-sdk"
 	},
 	"devDependencies": {
 		"chai": "^4.1.2",
