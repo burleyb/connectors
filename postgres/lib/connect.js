@@ -1,14 +1,13 @@
-const {
-	Pool,
-} = require('pg');
+var Pool = require('pg-pool')
+
 const logger = require('leo-logger')('connector.sql.postgres');
 const moment = require('moment');
 const format = require('pg-format');
 const async = require('async');
 const sqlstring = require('sqlstring');
 
-var copyFrom = require('pg-copy-streams').from;
-var copyTo = require('pg-copy-streams').to;
+var copyFrom = require('pg-query-stream').from;
+var copyTo = require('pg-query-stream').to;
 let csv = require('fast-csv');
 
 require('pg').types.setTypeParser(1114, (val) => {

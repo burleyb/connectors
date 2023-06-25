@@ -17,40 +17,40 @@ let copyDataThrough;
 
 function toObject(acc, field) {	acc[field.n] = field.v;	return acc;}
 
-Connection.prototype.attachListeners = function(stream) {
-	var self = this;
+// Connection.prototype.attachListeners = function(stream) {
+// 	var self = this;
 
-	stream.on('data', function(buff) {
-		self._reader.addChunk(buff);
-		var packet = self._reader.read();
-		let lastWriteGood = true;
-		while (packet) {
-			var msg = self.parseMessage(packet);
-			// logger.log("========== msg =========", msg)
-			if (self._emitMessage) {
-				self.emit('message', msg);
-			}
-			if (msg.name == "copyData") {
-				lastWriteGood = copyDataThrough.write(msg);
-			} else {
-				self.emit(msg.name, msg);
-			}
-			packet = self._reader.read();
-		}
-		if (!lastWriteGood || shutdown) {
-			logger.log("============================ pausing stream ============================")
-			stream.pause();
-			if (!shutdown) {
-				copyDataThrough.once('drain', () => {
-					stream.resume();
-				});
-			}
-		}
-	});
-	stream.on('end', function() {
-		self.emit('end');
-	});
-};
+// 	stream.on('data', function(buff) {
+// 		self.sendCopyFromChunk(buff);
+
+// 		let lastWriteGood = true;
+// 		while (packet) {
+// 			var msg = self.parseMessage(packet);
+// 			// logger.log("========== msg =========", msg)
+// 			if (self._emitMessage) {
+// 				self.emit('message', msg);
+// 			}
+// 			if (msg.name == "copyData") {
+// 				lastWriteGood = copyDataThrough.write(msg);
+// 			} else {
+// 				self.emit(msg.name, msg);
+// 			}
+// 			packet = self.read();
+// 		}
+// 		if (!lastWriteGood || shutdown) {
+// 			logger.log("============================ pausing stream ============================")
+// 			stream.pause();
+// 			if (!shutdown) {
+// 				copyDataThrough.once('drain', () => {
+// 					stream.resume();
+// 				});
+// 			}
+// 		}
+// 	});
+// 	stream.on('end', function() {
+// 		self.emit('end');
+// 	});
+// };
 
 module.exports = {
 	stream: function(ID, config, opts) {

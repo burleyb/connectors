@@ -23,8 +23,11 @@
 		"fast-csv": "2.4.1",
 		"leo-connector-common": "file:../common",
 		"pg": "^8.11.0",
-		"pg-copy-streams": "^6.0.5",
-		"pg-format": "1.0.4",
+		"pg-format": "^1.0.4",
+		"pg-native": "^3.0.1",
+		"pg-pool": "^3.6.0",
+		"pg-query-stream": "^4.5.0",
+		"pg-types": "^4.0.1",
 		"sqlstring": "^2.3.3"
 	},
 	"devDependencies": {
@@ -38,7 +41,8 @@
 			"build": {
 				"include": [
 					"pg",
-					"pg-format"
+					"pg-format",
+					"pg-native"
 				]
 			}
 		}
