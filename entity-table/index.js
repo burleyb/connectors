@@ -1,13 +1,15 @@
 const leoaws = require('leo-aws');
 let leo = require("leo-sdk");
+const logger = require('leo-logger')('leo-connector-entity-table');
 let ls = leo.streams;
 let refUtil = require("leo-sdk/lib/reference.js");
 let merge = require("lodash.merge");
 var backoff = require("backoff");
 var async = require("async");
-let aws = require("aws-sdk");
+const { unmarshall } = require("@aws-sdk/util-dynamodb");
+const zlib = require('zlib');
 
-const logger = require("leo-sdk/lib/logger")("leo-connector-entity-table");
+const GZIP_MIN = 5000;
 
 function hashCode(str) {
 	if (typeof str === "number") {
@@ -31,9 +33,27 @@ function hashCode(str) {
 }
 
 module.exports = {
+	/**
+	 * Expects a string, deflates it, and converts it to base64
+	 * @param string
+	 * @returns {string}
+	 */
+	deflate: string => {
+		let buffer = zlib.deflateSync(string);
+		return buffer.toString('base64');
+	},
 	hash: (entity, id, count = 10) => {
 		let hash = Math.abs(hashCode(id)) % count;
 		return `${entity}-${hash}`;
+	},
+	/**
+	 * Expects a base64 encoded string, decodes it, and inflates it.
+	 * @param string
+	 * @returns {string}
+	 */
+	inflate: string => {
+		let buffer = Buffer.from(string, 'base64');
+		return zlib.inflateSync(buffer).toString();
 	},
 	get: function(table, entity, id) {
 		if (id === undefined) {
@@ -79,6 +99,21 @@ module.exports = {
 				}
 				done(null, e);
 			}),
+			ls.through((payload, done) => {
+				// check size
+				let size = Buffer.byteLength(JSON.stringify(payload));
+
+				if (size > GZIP_MIN) {
+					let compressedObj = {
+						[opts.range]: payload[opts.range],
+						[opts.hash]: payload[opts.hash],
+						compressedData: self.deflate(JSON.stringify(payload)),
+					};
+					payload = compressedObj;
+				}
+
+				done(null, payload);
+			}),
 			toDynamoDB(table, opts)
 		);
 	},
@@ -97,6 +132,18 @@ module.exports = {
 			}
 			if (opts.start) {
 				readOpts.start = opts.start;
+			}
+			if (opts.fast_s3_read) {
+				readOpts.fast_s3_read = opts.fast_s3_read;
+			}
+			if (opts.fast_s3_read_parallel_fetch_max_bytes) {
+				readOpts.fast_s3_read_parallel_fetch_max_bytes = opts.fast_s3_read_parallel_fetch_max_bytes;
+			}
+			if (opts.stream_query_limit) {
+				readOpts.stream_query_limit = opts.stream_query_limit;
+			}
+			if (opts.loops) {
+				readOpts.loops = opts.loops;
 			}
 			ls.pipe(
 				leo.read(botId, queue, readOpts),
@@ -135,49 +182,85 @@ module.exports = {
 			);
 		});
 	},
-	tableOldNewProcessor: function(options) {
+	tableOldNewProcessor: function(optionsIn) {
+		let options = Object.assign({ kinesisBatchLimit: 200 }, optionsIn);
+		let self = this;
 		return function(event, context, callback) {
 			let streams = {};
+			let batchSize = event.Records.length;
+			let filePrefix = event.Records[0].eventID;
+			logger.info(`batchSize=${batchSize}`);
+			let localReadOpts = Object.assign({
+				prefix: filePrefix,
+				force: true
+			}, options.read);
+			if (batchSize >= options.kinesisBatchLimit) {
+				logger.info(`using S3 for batchSize of ${batchSize}`);
+				localReadOpts.useS3 = true;
+			}
+			else {
+				logger.info(`using Kinesis for batchSize of ${batchSize}`);
+				localReadOpts.useS3 = false;
+			}
+
 			let index = 0;
 			let defaultQueue = options.defaultQueue || "Unknown";
 			let resourcePrefix = sanitizePrefix(options.resourcePrefix);
 			let resourceSuffix = options.eventSuffix || "_table_changes";
-			let getStream = id => {
-				if (!(id in streams)) {
-					streams[id] = ls.pipeline(leo.write(id), ls.toCheckpoint({
-						force: true
-					}));
+			let getStream = (id, queue) => {
+				let key = `${id}/${queue}`;
+				if (!(key in streams)) {
+					streams[key] = leo.load(id, queue, localReadOpts);
+					// ls.pipeline(leo.write(id), ls.toCheckpoint({
+					// 	force: true
+					// }));
 				}
-				return streams[id];
+				return streams[key];
 			};
 			async.doWhilst(
 				function(done) {
 					let record = event.Records[index];
 					let data = {
-						id: context.botId,
+						correlation_id: {
+							start: record.eventID,
+							source: record.eventSourceARN.match(/:table\/(.*?)\/stream/)[1]
+						},
 						event: defaultQueue,
+						event_source_timestamp: record.dynamodb.ApproximateCreationDateTime * 1000,
+						id: context.botId,
 						payload: {
 							new: null,
 							old: null
 						},
-						event_source_timestamp: record.dynamodb.ApproximateCreationDateTime * 1000,
 						timestamp: Date.now(),
-						correlation_id: {
-							start: record.eventID,
-							source: record.eventSourceARN.match(/:table\/(.*?)\/stream/)[1]
-						}
 					};
 					let eventPrefix = resourcePrefix;
 					if ("OldImage" in record.dynamodb) {
-						let image = aws.DynamoDB.Converter.unmarshall(record.dynamodb.OldImage);
-						data.payload.old = image;
+						let image = unmarshall(record.dynamodb.OldImage);
+
+						if (image.compressedData) {
+							// compressedData contains everything including hash/range
+							let inflated = self.inflate(image.compressedData);
+							data.payload.old = JSON.parse(inflated);
+						} else {
+							data.payload.old = image;
+						}
+
 						if (resourcePrefix.length === 0) {
 							eventPrefix = image.partition.split(/-/)[0];
 						}
 					}
 					if ("NewImage" in record.dynamodb) {
-						let image = aws.DynamoDB.Converter.unmarshall(record.dynamodb.NewImage);
-						data.payload.new = image;
+						let image = unmarshall(record.dynamodb.NewImage);
+
+						if (image.compressedData) {
+							// compressedData contains everything including hash/range
+							let inflated = self.inflate(image.compressedData);
+							data.payload.new = JSON.parse(inflated);
+						} else {
+							data.payload.new = image;
+						}
+
 						if (resourcePrefix.length === 0) {
 							eventPrefix = image.partition.split(/-/)[0];
 						}
@@ -187,7 +270,7 @@ module.exports = {
 					let sanitizedSrc = data.correlation_id.source.replace(/-[A-Z0-9]{12,}$/, "");
 					data.correlation_id.source = options.system || `system:dynamodb.${sanitizedSrc}.${eventPrefix}`;
 
-					let stream = getStream(data.id);
+					let stream = getStream(data.id, data.event);
 					stream.write(data) ? done() : stream.once("drain", () => done());
 				},
 				function() {
@@ -214,9 +297,9 @@ module.exports = {
 	},
 	tableProcessor: function(event, context, callback) {	// old function for supporting old way before we had tableOldNewProcessor
 		this.tableOldNewProcessor({
-		    botSuffix: "_entity_changes",
-		    defaultQueue: "Unknown",
-		    eventSuffix: "_changes",
+			botSuffix: "_entity_changes",
+			defaultQueue: "Unknown",
+			eventSuffix: "_changes",
 		});
 	}
 };
@@ -229,6 +312,7 @@ function toDynamoDB(table, opts) {
 		time: {
 			seconds: 2
 		},
+		maxAsyncTasks: 10,
 		merge: false
 	}, opts || {});
 
@@ -361,8 +445,7 @@ function toDynamoDB(table, opts) {
 							[table]: myRecords
 						},
 						"ReturnConsumedCapacity": 'TOTAL'
-					},
-					function(err, data) {
+					}, function(err, data) {
 						if (err) {
 							logger.info(`All ${myRecords.length} records failed! Retryable: ${err.retryable}`, err);
 							logger.error(myRecords);
@@ -391,7 +474,8 @@ function toDynamoDB(table, opts) {
 					let newObj = lookup[key(e)];
 					newObj.PutRequest.Item = merge(e, newObj.PutRequest.Item);
 				});
-				async.parallelLimit(tasks, 10, (err, results) => {
+				console.log(`tasks.length = ${tasks && tasks.length || 0}`);
+				async.parallelLimit(tasks, opts.maxAsyncTasks || 10, (err, results) => {
 					if (err) {
 						retry.fail(err);
 					} else {
