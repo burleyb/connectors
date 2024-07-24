@@ -21,22 +21,15 @@
 		"aws-sdk": "^2.720.0",
 		"backoff": "^2.5.0",
 		"fast-csv": "2.4.1",
-<<<<<<< HEAD
 		"leo-connector-common": "file:../common",
-		"pg": "^8.11.0",
+		"pg": "^8.11.3",
 		"pg-format": "^1.0.4",
 		"pg-native": "^3.0.1",
-		"pg-pool": "^3.6.0",
+		"pg-pool": "^3.6.1",
 		"pg-query-stream": "^4.5.0",
 		"pg-types": "^4.0.1",
-		"sqlstring": "^2.3.3"
-=======
-		"leo-connector-common": "^5.0.0",
-		"pg": "^8.11.3",
-		"pg-copy-streams": "2.2.2",
-		"pg-format": "1.0.4",
-		"pg-pool": "^3.6.1"
->>>>>>> c094f10a4b1456794197c5e325baec37e6fafd76
+		"sqlstring": "^2.3.3",
+		"pg-copy-streams": "2.2.2"
 	},
 	"devDependencies": {
 		"chai": "^4.2.0",
