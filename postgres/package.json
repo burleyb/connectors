@@ -22,14 +22,15 @@
 		"backoff": "^2.5.0",
 		"fast-csv": "2.4.1",
 		"leo-connector-common": "file:../common",
+		"leo-streams": "file:../../leo-streams",
 		"pg": "^8.11.3",
+		"pg-copy-streams": "2.2.2",
 		"pg-format": "^1.0.4",
 		"pg-native": "^3.0.1",
 		"pg-pool": "^3.6.1",
 		"pg-query-stream": "^4.5.0",
 		"pg-types": "^4.0.1",
-		"sqlstring": "^2.3.3",
-		"pg-copy-streams": "2.2.2"
+		"sqlstring": "^2.3.3"
 	},
 	"devDependencies": {
 		"chai": "^4.2.0",
